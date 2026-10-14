@@ -1,13 +1,16 @@
-package main
+package cli
 
 import (
 	"flag"
 	"fmt"
 	"strings"
+
+	"windroute/internal/detect"
+	"windroute/internal/nft"
 )
 
-// cmdInspect shows what windroute sees on this machine: Windscribe's
-// processes, the sockets carrying the VPN transport, and the interception plan.
+// cmdInspect shows what windroute sees on this machine: Windscribe's processes,
+// the sockets carrying the VPN transport, and the interception plan.
 func cmdInspect(args []string) error {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	showRules := fs.Bool("rules", true, "print the nftables ruleset that would be applied")
@@ -16,7 +19,7 @@ func cmdInspect(args []string) error {
 		return err
 	}
 
-	procs := scanProcs()
+	procs := detect.Scan()
 
 	// --- Windscribe processes -------------------------------------------------
 	fmt.Println("Windscribe processes")
@@ -24,11 +27,11 @@ func cmdInspect(args []string) error {
 	fmt.Fprintln(tw, "  PID\tUSER\tPROCESS\tCGROUP")
 	found := 0
 	for _, p := range procs {
-		if !isWindscribe(p) {
+		if !detect.IsWindscribe(p) {
 			continue
 		}
 		found++
-		fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", p.PID, p.User, processLabel(p), p.Cgroup)
+		fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", p.PID, p.User, detect.Label(p), p.Cgroup)
 	}
 	if found == 0 {
 		fmt.Println("  (none found - is the Windscribe app running?)")
@@ -39,9 +42,9 @@ func cmdInspect(args []string) error {
 
 	// --- VPN transport daemons ------------------------------------------------
 	fmt.Println("VPN transport daemons")
-	var transports []Proc
+	var transports []detect.Proc
 	for _, p := range procs {
-		if isVPNTransport(p) {
+		if detect.IsVPNTransport(p) {
 			transports = append(transports, p)
 		}
 	}
@@ -51,7 +54,7 @@ func cmdInspect(args []string) error {
 		tw = newTabWriter()
 		fmt.Fprintln(tw, "  PID\tUSER\tPROCESS\tCGROUP")
 		for _, p := range transports {
-			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", p.PID, p.User, processLabel(p), p.Cgroup)
+			fmt.Fprintf(tw, "  %d\t%s\t%s\t%s\n", p.PID, p.User, detect.Label(p), p.Cgroup)
 		}
 		tw.Flush()
 	}
@@ -61,14 +64,14 @@ func cmdInspect(args []string) error {
 	fmt.Println("Established TCP sockets owned by Windscribe")
 	wsPIDs := map[int]bool{}
 	for _, p := range procs {
-		if isWindscribe(p) {
+		if detect.IsWindscribe(p) {
 			wsPIDs[p.PID] = true
 		}
 	}
 	tw = newTabWriter()
 	fmt.Fprintln(tw, "  LOCAL\tPEER\tPROCESS")
 	n := 0
-	for _, s := range listSockets() {
+	for _, s := range detect.ListSockets() {
 		if !wsPIDs[s.PID] && !strings.Contains(strings.ToLower(s.Process), "windscribe") {
 			continue
 		}
@@ -86,46 +89,31 @@ func cmdInspect(args []string) error {
 	fmt.Println("Local listeners (possible upstream proxies)")
 	tw = newTabWriter()
 	fmt.Fprintln(tw, "  ADDRESS\tPROCESS")
-	for _, s := range listListeners() {
+	for _, s := range detect.ListListeners() {
 		fmt.Fprintf(tw, "  %s\t%s(%d)\n", s.Local, s.Process, s.PID)
 	}
 	tw.Flush()
 	fmt.Println()
 
 	// --- Interception plan ----------------------------------------------------
-	cgroup, err := DetectCgroup()
+	cgroup, err := detect.DetectCgroup()
 	fmt.Println("Interception plan")
 	if err != nil {
 		fmt.Printf("  cgroup : UNKNOWN (%v)\n", err)
 	} else {
-		fmt.Printf("  match cgroup : %s (level %d)\n", cgroup, cgroupLevel(cgroup))
+		fmt.Printf("  match cgroup : %s (level %d)\n", cgroup, detect.CgroupLevel(cgroup))
 	}
 	fmt.Printf("  redirect     : IPv4 TCP -> 127.0.0.1:%d\n", *port)
-	fmt.Printf("  excludes     : %s\n", strings.Join(defaultExcludes, ", "))
+	fmt.Printf("  excludes     : %s\n", strings.Join(nft.DefaultExcludes, ", "))
 	fmt.Println("  note         : Windscribe must use a TCP protocol (tcp / wstunnel / stealth);")
 	fmt.Println("                 UDP (wireguard / udp) is not intercepted by this version.")
 
 	if *showRules && err == nil {
 		fmt.Println()
 		fmt.Println("nftables ruleset that would be applied")
-		fmt.Println(indent(buildRuleset(cgroup, *port, defaultExcludes), "  "))
+		fmt.Println(indent(nft.BuildRuleset(cgroup, detect.CgroupLevel(cgroup), *port, nft.DefaultExcludes), "  "))
 	}
 	return nil
-}
-
-func processLabel(p Proc) string {
-	if p.Comm != "" {
-		return p.Comm
-	}
-	return baseName(p.Cmdline)
-}
-
-func listListeners() []Sock {
-	out, err := runOut("ss", "-tlnp")
-	if err != nil {
-		return nil
-	}
-	return parseSS(out)
 }
 
 func indent(s, prefix string) string {

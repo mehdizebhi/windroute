@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"fmt"
@@ -22,10 +22,10 @@ type proxyStats struct {
 	active   atomic.Int64
 }
 
-// serveProxy listens on listen and forwards every accepted connection to the
+// Serve listens on listen and forwards every accepted connection to the
 // original destination through the upstream proxy. It blocks until the
 // listener is closed.
-func serveProxy(listen string, p *Proxy, logger *log.Logger) error {
+func Serve(listen string, p *Proxy, logger *log.Logger) error {
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return err

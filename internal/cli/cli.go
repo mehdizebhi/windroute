@@ -1,19 +1,20 @@
-// windroute routes the Windscribe Desktop GUI VPN transport through an
-// existing HTTP or SOCKS5 proxy without creating a second VPN or a TUN device.
-package main
+// Package cli implements windroute's command line interface.
+package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
+// version is the windroute release version.
 const version = "0.1.0"
 
-func main() {
-	args := os.Args[1:]
+// Main runs the windroute CLI and returns a process exit code.
+func Main(args []string) int {
 	if len(args) == 0 {
 		usage(os.Stderr)
-		os.Exit(2)
+		return 2
 	}
 
 	cmd, rest := args[0], args[1:]
@@ -41,16 +42,17 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "windroute: unknown command %q\n\n", cmd)
 		usage(os.Stderr)
-		os.Exit(2)
+		return 2
 	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "windroute: error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	fmt.Fprint(w, `windroute - route Windscribe's VPN transport through a SOCKS5/HTTP proxy
 
 USAGE

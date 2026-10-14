@@ -34,7 +34,7 @@ and hands it to your proxy.
 ## Build
 
 ```bash
-go build -o windroute .
+go build -o windroute ./cmd/windroute
 # or
 make install            # installs to /usr/local/bin
 ```
@@ -157,14 +157,13 @@ a GUI, VPN protocols, or bundling V2Ray/Xray.
 ## Layout
 
 ```text
-main.go        command dispatch and help
-commands.go    start / stop / status / test-proxy / serve
-inspect.go     the "inspect" command
-doctor.go      the "doctor" command
-detect.go      Windscribe process, cgroup and socket detection
-nft.go         nftables ruleset generation and (un)install
-proxy.go       transparent redirect listener (SO_ORIGINAL_DST) and relay
-dialer.go      SOCKS5 and HTTP CONNECT client dialing
-state.go       runtime state under /run/windroute
-util.go        small helpers
+cmd/windroute/       thin main package (calls internal/cli)
+internal/cli/        command dispatch and the start/stop/status/inspect/
+                     doctor/test-proxy/serve commands
+internal/detect/     Windscribe process, cgroup and socket detection
+internal/nft/        nftables ruleset generation and (un)install
+internal/proxy/      SOCKS5 / HTTP CONNECT dialing and the transparent
+                     redirect listener (SO_ORIGINAL_DST) and relay
+internal/state/      runtime state under /run/windroute
+internal/util/       small shared helpers
 ```

@@ -4,7 +4,7 @@ PREFIX  ?= /usr/local
 .PHONY: build install uninstall vet clean
 
 build:
-	go build -o $(BINARY) .
+	go build -o $(BINARY) ./cmd/windroute
 
 install: build
 	install -Dm755 $(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)

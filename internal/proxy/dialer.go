@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"bufio"
@@ -22,13 +22,13 @@ type Proxy struct {
 	Addr string // host:port of the proxy itself
 }
 
-// ParseProxy validates a proxy URL such as:
+// Parse validates a proxy URL such as:
 //
 //	socks5://127.0.0.1:10808
 //	socks5h://user:pass@127.0.0.1:1080
 //	http://127.0.0.1:10809
 //	https://user:pass@proxy.example:8443
-func ParseProxy(raw string) (*Proxy, error) {
+func Parse(raw string) (*Proxy, error) {
 	if raw == "" {
 		return nil, errors.New("empty proxy URL")
 	}
@@ -72,8 +72,7 @@ func (p *Proxy) dialSOCKS5(target string, timeout time.Duration) (net.Conn, erro
 	if err != nil {
 		return nil, fmt.Errorf("dial proxy %s: %w", p.Addr, err)
 	}
-	deadline := time.Now().Add(timeout)
-	_ = conn.SetDeadline(deadline)
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	methods := []byte{0x00} // no auth
 	var user, pass string

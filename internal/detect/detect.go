@@ -1,4 +1,6 @@
-package main
+// Package detect finds Windscribe processes, the cgroup that carries the VPN
+// transport, and the sockets involved.
+package detect
 
 import (
 	"errors"
@@ -7,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"windroute/internal/util"
 )
 
 // Proc is a minimal view of a process we care about.
@@ -18,8 +22,8 @@ type Proc struct {
 	Cgroup  string // path relative to the cgroup2 root, e.g. /system.slice/x.service
 }
 
-// vpnTransportBinaries are the helper-spawned daemons that carry the actual
-// VPN transport. They are the ones we want to intercept.
+// vpnTransportBinaries are the helper-spawned daemons that carry the actual VPN
+// transport. They are the ones we want to intercept.
 var vpnTransportBinaries = map[string]bool{
 	"windscribeopenvpn":   true,
 	"windscribewstunnel":  true,
@@ -27,8 +31,8 @@ var vpnTransportBinaries = map[string]bool{
 	"windscribectrld":     true,
 }
 
-// scanProcs reads /proc and returns all processes we can see.
-func scanProcs() []Proc {
+// Scan reads /proc and returns all processes we can see.
+func Scan() []Proc {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
@@ -84,7 +88,7 @@ func readUser(pidDir string) string {
 		return ""
 	}
 	uid := "?"
-	if sys, ok := statUID(st); ok {
+	if sys, ok := util.StatUID(st); ok {
 		uid = sys
 	}
 	return uid
@@ -97,8 +101,8 @@ func baseName(s string) string {
 	return s
 }
 
-// isWindscribe reports whether a process belongs to Windscribe.
-func isWindscribe(p Proc) bool {
+// IsWindscribe reports whether a process belongs to Windscribe.
+func IsWindscribe(p Proc) bool {
 	return strings.Contains(p.Cmdline, "windscribe") ||
 		strings.Contains(p.Cgroup, "windscribe")
 }
@@ -108,37 +112,47 @@ func isHelper(p Proc) bool {
 	return baseName(p.Cmdline) == "helper" && strings.Contains(p.Cmdline, "windscribe")
 }
 
-// isVPNTransport reports whether a process is a helper-spawned VPN daemon.
-func isVPNTransport(p Proc) bool {
+// IsVPNTransport reports whether a process is a helper-spawned VPN daemon.
+func IsVPNTransport(p Proc) bool {
 	return vpnTransportBinaries[baseName(p.Cmdline)]
 }
 
-// normCgroup converts an absolute cgroup path into the relative form used by
+// Label returns a short display name for a process.
+func Label(p Proc) string {
+	if p.Comm != "" {
+		return p.Comm
+	}
+	return baseName(p.Cmdline)
+}
+
+// NormCgroup converts an absolute cgroup path into the relative form used by
 // nftables' "socket cgroupv2 level N" matcher.
-func normCgroup(c string) string {
+func NormCgroup(c string) string {
 	return strings.Trim(c, "/")
 }
 
-func cgroupLevel(c string) int {
-	c = normCgroup(c)
+// CgroupLevel returns the number of path components in a cgroup path, which is
+// the "level" nftables needs for a given cgroup.
+func CgroupLevel(c string) int {
+	c = NormCgroup(c)
 	if c == "" {
 		return 0
 	}
 	return len(strings.Split(c, "/"))
 }
 
-// DetectCgroup finds the cgroup that carries Windscribe's VPN transport.
-// It prefers a live VPN daemon, then falls back to the helper service.
+// DetectCgroup finds the cgroup that carries Windscribe's VPN transport. It
+// prefers a live VPN daemon, then falls back to the helper service.
 func DetectCgroup() (string, error) {
-	procs := scanProcs()
+	procs := Scan()
 	for _, p := range procs {
-		if isVPNTransport(p) && p.Cgroup != "" {
-			return normCgroup(p.Cgroup), nil
+		if IsVPNTransport(p) && p.Cgroup != "" {
+			return NormCgroup(p.Cgroup), nil
 		}
 	}
 	for _, p := range procs {
 		if isHelper(p) && p.Cgroup != "" {
-			return normCgroup(p.Cgroup), nil
+			return NormCgroup(p.Cgroup), nil
 		}
 	}
 	// Last resort: the default systemd unit path.
@@ -149,7 +163,7 @@ func DetectCgroup() (string, error) {
 	return "", errors.New("could not find the Windscribe helper cgroup (is the Windscribe app running?)")
 }
 
-// Sock is an established TCP socket associated with a process.
+// Sock is a TCP socket associated with a process.
 type Sock struct {
 	Local   string
 	Peer    string
@@ -157,14 +171,24 @@ type Sock struct {
 	PID     int
 }
 
-var ssPidRE = regexp.MustCompile(`pid=(\d+)`)
-var ssNameRE = regexp.MustCompile(`\("([^"]+)"`)
+var (
+	ssPidRE  = regexp.MustCompile(`pid=(\d+)`)
+	ssNameRE = regexp.MustCompile(`\("([^"]+)"`)
+)
 
-// listSockets runs "ss -tnp" and parses the established TCP sockets. Requires
-// root to see sockets owned by other users; without root the process column is
-// empty.
-func listSockets() []Sock {
-	out, err := runOut("ss", "-tnp", "state", "established")
+// ListSockets returns established TCP sockets. Requires root to see sockets
+// owned by other users; without root the process column is empty.
+func ListSockets() []Sock {
+	out, err := util.RunOut("ss", "-tnp", "state", "established")
+	if err != nil {
+		return nil
+	}
+	return parseSS(out)
+}
+
+// ListListeners returns listening TCP sockets.
+func ListListeners() []Sock {
+	out, err := util.RunOut("ss", "-tlnp")
 	if err != nil {
 		return nil
 	}

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"flag"
@@ -6,6 +6,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"windroute/internal/detect"
+	"windroute/internal/nft"
+	"windroute/internal/proxy"
+	"windroute/internal/state"
+	"windroute/internal/util"
 )
 
 type checkResult struct {
@@ -27,15 +33,15 @@ func cmdDoctor(args []string) error {
 	}
 
 	// root
-	if isRoot() {
+	if util.IsRoot() {
 		add("privileges", "ok", "running as root")
 	} else {
 		add("privileges", "warn", "not root; 'start' and 'stop' need sudo")
 	}
 
 	// nftables
-	if have("nft") {
-		v, _ := runOut("nft", "--version")
+	if util.Have("nft") {
+		v, _ := util.RunOut("nft", "--version")
 		add("nftables", "ok", strings.TrimSpace(v))
 	} else {
 		add("nftables", "fail", "'nft' not found in PATH (install nftables)")
@@ -49,22 +55,22 @@ func cmdDoctor(args []string) error {
 	}
 
 	// Windscribe installed
-	if have("windscribe-cli") || dirExists("/opt/windscribe") {
+	if util.Have("windscribe-cli") || dirExists("/opt/windscribe") {
 		add("windscribe", "ok", "Windscribe installation found")
 	} else {
 		add("windscribe", "fail", "Windscribe not found (install the desktop app)")
 	}
 
 	// helper service / cgroup
-	if cg, err := DetectCgroup(); err == nil {
-		add("intercept cgroup", "ok", fmt.Sprintf("%s (level %d)", cg, cgroupLevel(cg)))
+	if cg, err := detect.DetectCgroup(); err == nil {
+		add("intercept cgroup", "ok", fmt.Sprintf("%s (level %d)", cg, detect.CgroupLevel(cg)))
 	} else {
 		add("intercept cgroup", "warn", err.Error())
 	}
 
 	// helper systemd unit
-	if have("systemctl") {
-		out, _ := runOut("systemctl", "is-active", "windscribe-helper.service")
+	if util.Have("systemctl") {
+		out, _ := util.RunOut("systemctl", "is-active", "windscribe-helper.service")
 		switch strings.TrimSpace(out) {
 		case "active":
 			add("helper service", "ok", "windscribe-helper.service is active")
@@ -76,7 +82,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	// Windscribe connection state
-	if have("windscribe-cli") {
+	if util.Have("windscribe-cli") {
 		if st := windscribeStatusText(); st != "" {
 			add("windscribe status", "ok", st)
 		} else {
@@ -85,18 +91,18 @@ func cmdDoctor(args []string) error {
 	}
 
 	// stale state / leftover rules
-	if st, _ := LoadState(); st != nil && processAlive(st.PID) {
+	if st, _ := state.Load(); st != nil && processAlive(st.PID) {
 		add("existing instance", "warn", fmt.Sprintf("windroute is already running (pid %d)", st.PID))
 	}
-	if tableExists() {
-		add("nftables table", "warn", "table 'inet windroute' already exists")
-	} else if isRoot() {
-		add("nftables table", "ok", "no leftover 'inet windroute' table")
+	if nft.Exists() {
+		add("nftables table", "warn", fmt.Sprintf("table '%s' already exists", nft.Ref()))
+	} else if util.IsRoot() {
+		add("nftables table", "ok", "no leftover '"+nft.Ref()+"' table")
 	}
 
 	// proxy reachability
 	if strings.TrimSpace(*proxyURL) != "" {
-		p, err := ParseProxy(*proxyURL)
+		p, err := proxy.Parse(*proxyURL)
 		if err != nil {
 			add("proxy", "fail", err.Error())
 		} else {
@@ -143,7 +149,7 @@ func cmdDoctor(args []string) error {
 }
 
 func windscribeStatusText() string {
-	out, err := runOut("windscribe-cli", "status")
+	out, err := util.RunOut("windscribe-cli", "status")
 	if err != nil && out == "" {
 		return ""
 	}
