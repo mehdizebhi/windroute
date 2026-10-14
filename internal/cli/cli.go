@@ -7,8 +7,9 @@ import (
 	"os"
 )
 
-// version is the windroute release version.
-const version = "0.1.0"
+// version is the windroute release version. It is a variable so release builds
+// can override it with: -ldflags "-X windroute/internal/cli.version=vX.Y.Z".
+var version = "0.1.0"
 
 // Main runs the windroute CLI and returns a process exit code.
 func Main(args []string) int {

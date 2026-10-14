@@ -1,169 +1,103 @@
 # windroute
 
-Route the **Windscribe Desktop GUI** VPN connection through an existing
-**HTTP** or **SOCKS5** proxy.
+Route the **Windscribe Desktop GUI** VPN through an existing **SOCKS5 / HTTP**
+proxy on Linux — no second VPN, no system-wide TUN.
 
 ```text
-Apps
-  ↓
-Windscribe VPN
-  ↓
-Windroute          <- redirects only Windscribe's VPN transport
-  ↓
-HTTP / SOCKS5 proxy
-  ↓
-Windscribe server
-  ↓
-Internet
+Apps → Windscribe VPN → windroute → SOCKS5/HTTP proxy → Windscribe server → Internet
 ```
 
-Windroute does **not** create a VPN or a system-wide TUN. It intercepts just
-the TCP connection that Windscribe's VPN daemon makes to a Windscribe server
-and hands it to your proxy.
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mehdizebhi/windroute/main/install.sh | sh
+```
+
+Re-run the same command any time to **update**. Installs prebuilt `linux/amd64`
+and `linux/arm64` binaries from [GitHub Releases](https://github.com/mehdizebhi/windroute/releases).
+
+<details>
+<summary>Install options</summary>
+
+```bash
+# specific version
+curl -fsSL .../install.sh | WINDROUTE_VERSION=v0.1.0 sh
+# install to ~/.local/bin (no sudo)
+curl -fsSL .../install.sh | WINDROUTE_PREFIX="$HOME/.local" sh
+```
+</details>
 
 ## Requirements
 
-- Linux with nftables and a cgroup v2 unified hierarchy (Arch Linux + KDE is
-  the primary target).
-- Windscribe Desktop GUI (the `windscribe-helper` systemd service must be
-  running).
-- A SOCKS5 or HTTP proxy already running, e.g. `socks5://127.0.0.1:10808`.
-- **Windscribe must use a TCP based protocol**: `tcp`, `wstunnel` or `stealth`.
-  UDP protocols (`wireguard`, `udp`, `ikev2`) are *not* intercepted in v0.1.
+Linux with `nftables` and **cgroup v2**, the Windscribe Desktop app, a running
+SOCKS5/HTTP proxy, and a **TCP** Windscribe protocol (`tcp`, `wstunnel` or
+`stealth`). UDP/WireGuard is **not** supported in v0.1.
 
-## Build
+## Use
 
 ```bash
-go build -o windroute ./cmd/windroute
-# or
-make install            # installs to /usr/local/bin
-```
-
-## Quick start
-
-```bash
-# 1. check everything is in place
-windroute doctor --proxy socks5://127.0.0.1:10808
-
-# 2. confirm the proxy really works end to end
-windroute test-proxy --proxy socks5://127.0.0.1:10808
-
-# 3. start routing (needs root) and connect Windscribe over a TCP protocol
+windroute doctor --proxy socks5://127.0.0.1:10808            # check the system
+windroute test-proxy --proxy socks5://127.0.0.1:10808        # check the proxy
 sudo windroute start --proxy socks5://127.0.0.1:10808 --connect wstunnel
-
-# 4. check on it
 windroute status
-
-# 5. undo everything
-sudo windroute stop
+sudo windroute stop                                          # undo everything
 ```
 
-If you prefer to connect from the Windscribe GUI, skip `--connect` and start
-the VPN after `windroute start`:
-
-```bash
-sudo windroute start --proxy socks5://127.0.0.1:10808
-# now connect from the Windscribe GUI using a TCP protocol
-```
+Skip `--connect` to connect from the Windscribe GUI instead (use a TCP protocol).
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `windroute start --proxy <url>` | Start the local redirect proxy and install nftables rules |
-| `windroute stop` | Remove the nftables rules and stop the proxy |
-| `windroute status` | Show whether windroute is running |
-| `windroute inspect` | Show Windscribe processes/endpoints and the interception plan |
-| `windroute doctor` | Check the system for everything windroute needs |
-| `windroute test-proxy --proxy <url>` | Verify a proxy reaches a target (incl. a TLS probe) |
-| `windroute version` | Print the version |
+| `start --proxy <url>` | Start the redirect proxy and install nftables rules |
+| `stop` | Remove the rules and stop the proxy (idempotent) |
+| `status` | Show whether windroute is running |
+| `inspect` | Show Windscribe processes/endpoints and the interception plan |
+| `doctor` | Check the system for everything windroute needs |
+| `test-proxy --proxy <url>` | Verify a proxy reaches a target (with a TLS probe) |
 
-Useful `start` flags:
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--proxy` | – | Upstream proxy URL (required) |
-| `--port` | `10800` | Local port redirected traffic is sent to |
-| `--connect` | – | Run `windscribe-cli connect <protocol>` after start |
-| `--location` | – | Location passed to `windscribe-cli connect` |
-| `--cgroup` | auto | Override the intercepted cgroup |
-| `--exclude` | – | Extra comma separated CIDRs never redirected |
-| `--no-rules` | `false` | Start only the proxy, do not touch nftables |
-
-Proxy URLs support `socks5://`, `socks5h://`, `http://` and `https://`, with
-optional `user:pass@` credentials.
+Proxy URLs: `socks5://`, `socks5h://`, `http://`, `https://` (optional `user:pass@`).
+Key `start` flags: `--port` (default `10800`), `--connect`, `--location`,
+`--cgroup`, `--exclude`, `--no-rules`.
 
 ## How it works
 
-1. **Detect.** Windscribe's root `windscribe-helper.service` spawns the VPN
-   daemon (`windscribeopenvpn`, `windscribewstunnel`, …). Windroute finds that
-   process (or its helper) and reads its **cgroup v2 path** from `/proc`.
-2. **Redirect.** Windroute installs one dedicated nftables table:
+1. **Detect** — Windscribe's root `windscribe-helper.service` spawns the VPN
+   daemon. windroute reads its **cgroup v2** path from `/proc`.
+2. **Redirect** — one dedicated nftables table sends only that cgroup's **IPv4
+   TCP** traffic to `127.0.0.1:<port>`, skipping loopback/private ranges so
+   Windscribe's own control channel keeps working.
+3. **Forward** — a tiny transparent proxy recovers the original destination
+   with `SO_ORIGINAL_DST` and dials it through your proxy.
 
-   ```nft
-   table inet windroute {
-       chain output {
-           type nat hook output priority -100; policy accept;
-           meta nfproto ipv4 meta l4proto tcp \
-               socket cgroupv2 level 2 "system.slice/windscribe-helper.service" \
-               ip daddr { 127.0.0.0/8, 10.0.0.0/8, … } return
-           meta nfproto ipv4 meta l4proto tcp \
-               socket cgroupv2 level 2 "system.slice/windscribe-helper.service" \
-               redirect to :10800
-       }
-   }
-   ```
+**No routing loop:** the redirect is scoped to Windscribe's cgroup, and
+windroute's own process is in a different cgroup, so its proxy connection can
+never be redirected back into itself. All changes live in one nftables table
+plus one child process, which is why `stop` (and recovery after a crash) is
+just removing them.
 
-   Only **IPv4 TCP** traffic generated by the Windscribe cgroup is redirected
-   to `127.0.0.1:10800`. Loopback and private ranges are left alone so
-   Windscribe's GUI⇄helper control channel keeps working.
-3. **Forward.** A small transparent proxy in windroute recovers the original
-   destination with `SO_ORIGINAL_DST` and dials it through your SOCKS5/HTTP
-   proxy, then relays both directions.
+## Limitations (v0.1)
 
-### Why no routing loop
+Windscribe TCP protocols only; UDP/WireGuard, IPv6 transports, TUN mode and a
+GUI are out of scope for now.
 
-The redirect is scoped to Windscribe's cgroup. Windroute's own process lives in
-a different cgroup, so its connection to the upstream proxy is never redirected
-back into windroute. No packet marks or extra routing tables are needed.
+## Build from source
 
-### Cleanup
+```bash
+go build -o windroute ./cmd/windroute     # or: make install
+```
 
-Everything windroute changes lives in the single `inet windroute` nftables
-table and one child process. `windroute stop` deletes the table and kills the
-process; it is idempotent and safe to run even after a crash.
-
-## Troubleshooting
-
-- **`inspect` shows no VPN transport daemon** — Windscribe is not connected.
-  Connect it, then run `inspect` again; the daemon and its endpoint will appear.
-- **Connection goes through the proxy but is very slow / dies** — your
-  Windscribe protocol is probably UDP. Reconnect with `tcp` or `wstunnel`:
-  `windscribe-cli connect wstunnel`.
-- **Nothing is intercepted** — confirm Windscribe runs under the
-  `windscribe-helper.service` cgroup (`windroute inspect`) and that the daemon
-  talks IPv4 TCP. UDP and IPv6 transports are out of scope for v0.1.
-- **Leftover rules after a crash** — `sudo windroute stop`, or remove the table
-  manually with `sudo nft delete table inet windroute`.
-
-## Scope of v0.1
-
-Implemented: Arch Linux, Windscribe GUI, TCP protocol, SOCKS5 + HTTP CONNECT,
-`start`/`stop`/`status`.
-
-Not implemented (by design, for now): WireGuard/UDP, TUN mode, IPv6 transports,
-a GUI, VPN protocols, or bundling V2Ray/Xray.
+Tagging `vX.Y.Z` triggers the release workflow, which builds and publishes the
+Linux binaries and checksums.
 
 ## Layout
 
 ```text
-cmd/windroute/       thin main package (calls internal/cli)
-internal/cli/        command dispatch and the start/stop/status/inspect/
-                     doctor/test-proxy/serve commands
-internal/detect/     Windscribe process, cgroup and socket detection
-internal/nft/        nftables ruleset generation and (un)install
-internal/proxy/      SOCKS5 / HTTP CONNECT dialing and the transparent
-                     redirect listener (SO_ORIGINAL_DST) and relay
-internal/state/      runtime state under /run/windroute
-internal/util/       small shared helpers
+cmd/windroute/    thin entrypoint
+internal/cli/     commands (start/stop/status/inspect/doctor/test-proxy)
+internal/detect/  Windscribe process, cgroup and socket detection
+internal/nft/     nftables ruleset generation and (un)install
+internal/proxy/   SOCKS5/HTTP CONNECT dialing + transparent redirect server
+internal/state/   runtime state under /run/windroute
+internal/util/    small shared helpers
 ```

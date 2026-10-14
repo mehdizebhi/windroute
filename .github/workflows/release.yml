@@ -1,0 +1,68 @@
+name: release
+
+# Tag a commit (e.g. "git tag v0.1.0 && git push --tags") to publish a release
+# with native Linux binaries and a checksums file.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X windroute/internal/cli.version=${VERSION}" \
+            -o dist/windroute ./cmd/windroute
+
+      - name: Package
+        run: |
+          asset="windroute-linux-${{ matrix.goarch }}.tar.gz"
+          cp README.md dist/
+          tar -C dist -czf "$asset" windroute README.md
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windroute-linux-${{ matrix.goarch }}
+          path: windroute-linux-${{ matrix.goarch }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Checksums
+        run: sha256sum windroute-linux-*.tar.gz > checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            windroute-linux-*.tar.gz
+            checksums.txt
+          generate_release_notes: true
