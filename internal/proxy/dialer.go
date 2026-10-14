@@ -283,3 +283,11 @@ type bufferedConn struct {
 }
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+
+// CloseWrite lets relay half-close the tunnel without dropping buffered reads.
+func (c *bufferedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}

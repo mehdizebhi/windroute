@@ -15,12 +15,20 @@ import (
 // connection that nftables redirected to us (REDIRECT target).
 const soOriginalDst = 80
 
-// proxyStats tracks what the local redirect proxy is doing.
-type proxyStats struct {
-	accepted atomic.Int64
-	failed   atomic.Int64
-	active   atomic.Int64
-}
+const (
+	// dialTimeout bounds the handshake with the upstream proxy.
+	dialTimeout = 15 * time.Second
+	// maxConcurrent caps simultaneously handled connections. It is a safety
+	// valve: if anything ever tries to loop back into us, windroute degrades to
+	// dropping connections instead of spinning forever.
+	maxConcurrent = 1024
+	// halfCloseGrace is how long the remaining direction may keep draining
+	// after the first direction of a tunnel has finished.
+	halfCloseGrace = 60 * time.Second
+)
+
+// active counts connections currently being handled.
+var active atomic.Int64
 
 // Serve listens on listen and forwards every accepted connection to the
 // original destination through the upstream proxy. It blocks until the
@@ -32,8 +40,6 @@ func Serve(listen string, p *Proxy, logger *log.Logger) error {
 	}
 	logger.Printf("listening on %s -> proxy %s", listen, p.Raw)
 
-	var stats proxyStats
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -42,20 +48,24 @@ func Serve(listen string, p *Proxy, logger *log.Logger) error {
 			}
 			return err
 		}
+		if active.Load() >= maxConcurrent {
+			logger.Printf("dropping %s: too many concurrent connections (%d)", conn.RemoteAddr(), maxConcurrent)
+			conn.Close()
+			continue
+		}
+		active.Add(1)
 		go func() {
-			stats.accepted.Add(1)
-			stats.active.Add(1)
-			defer stats.active.Add(-1)
-			if err := handleConn(conn, p, logger); err != nil {
-				stats.failed.Add(1)
+			defer active.Add(-1)
+			if err := handleConn(conn, p, listen, logger); err != nil {
 				logger.Printf("connection error: %v", err)
 			}
 		}()
 	}
 }
 
-func handleConn(client net.Conn, p *Proxy, logger *log.Logger) error {
+func handleConn(client net.Conn, p *Proxy, listen string, logger *log.Logger) error {
 	defer client.Close()
+	start := time.Now()
 
 	tcp, ok := client.(*net.TCPConn)
 	if !ok {
@@ -66,7 +76,16 @@ func handleConn(client net.Conn, p *Proxy, logger *log.Logger) error {
 		return fmt.Errorf("cannot recover original destination: %w", err)
 	}
 
-	upstream, err := p.Dial(target, 15*time.Second)
+	// Refuse anything that would loop back into windroute. Redirected traffic
+	// never targets loopback (the nftables rules exclude it), so such a
+	// connection is either our own startup probe or a stray local client.
+	// Proxying it would recurse forever.
+	if reason, loop := selfLoop(target, listen); loop {
+		logger.Printf("ignored %s -> %s: %s", client.RemoteAddr(), target, reason)
+		return nil
+	}
+
+	upstream, err := p.Dial(target, dialTimeout)
 	if err != nil {
 		return fmt.Errorf("%s: %w", target, err)
 	}
@@ -74,15 +93,70 @@ func handleConn(client net.Conn, p *Proxy, logger *log.Logger) error {
 
 	logger.Printf("redirect %s -> proxy -> %s", client.RemoteAddr(), target)
 
-	errc := make(chan error, 2)
-	go func() { _, e := io.Copy(upstream, client); errc <- e }()
-	go func() { _, e := io.Copy(client, upstream); errc <- e }()
-	<-errc
+	sent, recv := relay(client, upstream)
 
-	// Give the other direction a moment to flush before closing both ends.
-	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
-	_ = upstream.SetDeadline(time.Now().Add(2 * time.Second))
+	logger.Printf("closed %s -> %s in %s (%s up, %s down)",
+		client.RemoteAddr(), target, time.Since(start).Round(time.Millisecond), human(sent), human(recv))
 	return nil
+}
+
+// selfLoop reports whether forwarding to target would loop back into windroute.
+func selfLoop(target, listen string) (string, bool) {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return "", false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return "loopback destination", true
+	}
+	lhost, lport, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", false
+	}
+	if port == lport {
+		lip := net.ParseIP(lhost)
+		if lip == nil || lip.IsUnspecified() || host == lhost {
+			return "destination is windroute's own listen address", true
+		}
+	}
+	return "", false
+}
+
+// relay copies data in both directions. When one direction ends it half-closes
+// the peer so the other direction can still drain, and returns the byte counts.
+func relay(client, upstream net.Conn) (sent, recv int64) {
+	var sentN, recvN atomic.Int64
+	done := make(chan struct{}, 2)
+
+	go func() {
+		n, _ := io.Copy(upstream, client)
+		sentN.Store(n)
+		closeWrite(upstream)
+		done <- struct{}{}
+	}()
+	go func() {
+		n, _ := io.Copy(client, upstream)
+		recvN.Store(n)
+		closeWrite(client)
+		done <- struct{}{}
+	}()
+
+	<-done
+	// Let the other direction keep draining, but not indefinitely.
+	deadline := time.Now().Add(halfCloseGrace)
+	_ = client.SetDeadline(deadline)
+	_ = upstream.SetDeadline(deadline)
+	<-done
+
+	return sentN.Load(), recvN.Load()
+}
+
+type closeWriter interface{ CloseWrite() error }
+
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 // originalDst reads SO_ORIGINAL_DST from a redirected IPv4 connection and
@@ -122,4 +196,18 @@ func originalDst(c *net.TCPConn) (string, error) {
 		return "", fmt.Errorf("empty original destination")
 	}
 	return target, nil
+}
+
+// human formats a byte count compactly for logs.
+func human(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return strconv.FormatInt(n, 10) + "B"
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

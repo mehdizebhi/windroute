@@ -55,6 +55,7 @@ Skip `--connect` to connect from the Windscribe GUI instead (use a TCP protocol)
 | `inspect` | Show Windscribe processes/endpoints and the interception plan |
 | `doctor` | Check the system for everything windroute needs |
 | `test-proxy --proxy <url>` | Verify a proxy reaches a target (with a TLS probe) |
+| `logs` | Show the redirect proxy log (`-f` to follow) |
 
 Proxy URLs: `socks5://`, `socks5h://`, `http://`, `https://` (optional `user:pass@`).
 Key `start` flags: `--port` (default `10800`), `--connect`, `--location`,

@@ -34,6 +34,8 @@ func Main(args []string) int {
 		err = cmdDoctor(rest)
 	case "test-proxy", "test":
 		err = cmdTestProxy(rest)
+	case "logs":
+		err = cmdLogs(rest)
 	case "__serve":
 		err = cmdServe(rest)
 	case "version", "--version", "-v":
@@ -66,6 +68,7 @@ COMMANDS
   inspect      Show Windscribe processes, endpoints and the interception plan
   doctor       Check the system for everything windroute needs
   test-proxy   Verify that a proxy can reach a target
+  logs         Show (or -f to follow) the redirect proxy log
   version      Print version
 
 QUICK START
