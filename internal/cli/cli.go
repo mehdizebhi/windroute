@@ -9,7 +9,7 @@ import (
 
 // version is the windroute release version. It is a variable so release builds
 // can override it with: -ldflags "-X windroute/internal/cli.version=vX.Y.Z".
-var version = "0.1.0"
+var version = "0.2.0"
 
 // Main runs the windroute CLI and returns a process exit code.
 func Main(args []string) int {
@@ -36,6 +36,8 @@ func Main(args []string) int {
 		err = cmdTestProxy(rest)
 	case "logs":
 		err = cmdLogs(rest)
+	case "uninstall":
+		err = cmdUninstall(rest)
 	case "__serve":
 		err = cmdServe(rest)
 	case "version", "--version", "-v":
@@ -69,6 +71,7 @@ COMMANDS
   doctor       Check the system for everything windroute needs
   test-proxy   Verify that a proxy can reach a target
   logs         Show (or -f to follow) the redirect proxy log
+  uninstall    Remove windroute's rules, state and the executable
   version      Print version
 
 QUICK START

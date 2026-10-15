@@ -1,18 +1,23 @@
 #!/bin/sh
-# windroute installer / updater for Linux.
+# windroute installer / updater / uninstaller for Linux.
 #
 # Install or update with a single command:
 #
 #   curl -fsSL https://raw.githubusercontent.com/mehdizebhi/windroute/main/install.sh | sh
 #
+# Uninstall (removes the binary, windroute's nftables rules and its state):
+#
+#   curl -fsSL https://raw.githubusercontent.com/mehdizebhi/windroute/main/install.sh | sh -s -- --uninstall
+#
 # Environment variables:
 #   WINDROUTE_VERSION       release tag to install (default: latest release)
 #   WINDROUTE_PREFIX        install prefix (default: /usr/local)
+#   WINDROUTE_STATE_DIR     state directory (default: /run/windroute)
 #   WINDROUTE_DOWNLOAD_BASE override the download base URL (mirrors, testing)
 #
 # Examples:
 #   # install a specific version
-#   curl -fsSL .../install.sh | WINDROUTE_VERSION=v0.1.0 sh
+#   curl -fsSL .../install.sh | WINDROUTE_VERSION=v0.2.0 sh
 #
 #   # install into your home without sudo
 #   curl -fsSL .../install.sh | WINDROUTE_PREFIX="$HOME/.local" sh
@@ -24,6 +29,83 @@ BIN="windroute"
 say() { printf '%s\n' "$*"; }
 die() { printf 'windroute-install: error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
+
+usage() {
+	cat <<'EOF'
+windroute installer / updater / uninstaller
+
+Usage:
+  install.sh                 install or update windroute
+  install.sh --uninstall     remove windroute
+
+Environment:
+  WINDROUTE_VERSION          release tag to install (default: latest)
+  WINDROUTE_PREFIX           install prefix (default: /usr/local)
+  WINDROUTE_STATE_DIR        state directory (default: /run/windroute)
+  WINDROUTE_DOWNLOAD_BASE    override the download base URL
+EOF
+}
+
+# Pick the command prefix needed to write to a directory ("" when already
+# writable, "sudo" otherwise). Fails when neither is possible.
+root_cmd_for() {
+	dir="$1"
+	if [ "$(id -u)" -eq 0 ]; then
+		printf ''
+	elif mkdir -p "$dir" 2>/dev/null && [ -w "$dir" ]; then
+		printf ''
+	elif command -v sudo >/dev/null 2>&1; then
+		printf 'sudo'
+	else
+		die "$dir is not writable; re-run as root or set WINDROUTE_PREFIX"
+	fi
+}
+
+# --- uninstall --------------------------------------------------------------
+do_uninstall() {
+	prefix="${WINDROUTE_PREFIX:-/usr/local}"
+	bindir="$prefix/bin"
+	target="$bindir/$BIN"
+	statedir="${WINDROUTE_STATE_DIR:-/run/windroute}"
+
+	as_root=""
+	if [ "$(id -u)" -ne 0 ]; then
+		command -v sudo >/dev/null 2>&1 && as_root="sudo"
+	fi
+
+	# Undo networking changes and stop the proxy using the installed binary.
+	if [ -x "$target" ]; then
+		$as_root "$target" stop >/dev/null 2>&1 || true
+	elif command -v "$BIN" >/dev/null 2>&1; then
+		$as_root "$BIN" stop >/dev/null 2>&1 || true
+	fi
+
+	$as_root rm -rf "$statedir"
+	say "removed state directory $statedir"
+
+	if [ -e "$target" ]; then
+		$as_root rm -f "$target"
+		say "removed $target"
+	else
+		say "no binary found at $target"
+	fi
+
+	say "windroute uninstalled"
+}
+
+# --- argument handling ------------------------------------------------------
+case "${1:-}" in
+	--uninstall | -u)
+		do_uninstall
+		exit 0
+		;;
+	--help | -h)
+		usage
+		exit 0
+		;;
+	"") ;;
+	*) die "unknown argument: $1 (try --help)" ;;
+esac
 
 # --- platform ---------------------------------------------------------------
 os=$(uname -s)
@@ -82,17 +164,7 @@ prefix="${WINDROUTE_PREFIX:-/usr/local}"
 bindir="$prefix/bin"
 target="$bindir/$BIN"
 
-sudo_cmd=""
-if [ "$(id -u)" -eq 0 ]; then
-	sudo_cmd=""
-elif mkdir -p "$bindir" 2>/dev/null && [ -w "$bindir" ]; then
-	sudo_cmd=""
-elif command -v sudo >/dev/null 2>&1; then
-	sudo_cmd="sudo"
-else
-	die "$bindir is not writable; re-run as root or set WINDROUTE_PREFIX"
-fi
-
+sudo_cmd=$(root_cmd_for "$bindir")
 $sudo_cmd mkdir -p "$bindir"
 
 replaced="installed"
@@ -119,3 +191,5 @@ say ""
 say "Next steps:"
 say "  $BIN doctor --proxy socks5://127.0.0.1:10808"
 say "  sudo $BIN start --proxy socks5://127.0.0.1:10808 --connect wstunnel"
+say ""
+say "Uninstall with:  $BIN uninstall   (or re-run this script with --uninstall)"

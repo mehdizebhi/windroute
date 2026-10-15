@@ -22,33 +22,39 @@ func cmdStop(args []string) error {
 		return err
 	}
 
-	var problems []string
-
-	if err := nft.Remove(); err != nil {
-		problems = append(problems, err.Error())
-	} else {
-		fmt.Println("nftables: windroute rules removed")
+	actions, problems := teardown()
+	for _, a := range actions {
+		fmt.Println(a)
 	}
-
-	st, _ := state.Load()
-	if st != nil {
-		if st.PID > 0 && processAlive(st.PID) {
-			if err := stopProxy(st.PID); err != nil {
-				problems = append(problems, err.Error())
-			} else {
-				fmt.Printf("proxy: stopped (pid %d)\n", st.PID)
-			}
-		}
-	} else {
-		fmt.Println("proxy: no running instance recorded")
-	}
-	_ = state.Clear()
-
 	if len(problems) > 0 {
 		return fmt.Errorf("stop completed with issues: %s", strings.Join(problems, "; "))
 	}
 	fmt.Println("windroute stopped")
 	return nil
+}
+
+// teardown removes windroute's nftables rules, stops the redirect proxy and
+// clears the runtime state. It returns human readable actions and any problems,
+// so both "stop" and "uninstall" share exactly the same cleanup path.
+func teardown() (actions, problems []string) {
+	if err := nft.Remove(); err != nil {
+		problems = append(problems, err.Error())
+	} else {
+		actions = append(actions, "nftables: windroute rules removed")
+	}
+
+	st, _ := state.Load()
+	if st != nil && st.PID > 0 && processAlive(st.PID) {
+		if err := stopProxy(st.PID); err != nil {
+			problems = append(problems, err.Error())
+		} else {
+			actions = append(actions, fmt.Sprintf("proxy: stopped (pid %d)", st.PID))
+		}
+	} else {
+		actions = append(actions, "proxy: no running instance recorded")
+	}
+	_ = state.Clear()
+	return actions, problems
 }
 
 func stopProxy(pid int) error {

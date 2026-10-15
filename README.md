@@ -16,12 +16,18 @@ curl -fsSL https://raw.githubusercontent.com/mehdizebhi/windroute/main/install.s
 Re-run the same command any time to **update**. Installs prebuilt `linux/amd64`
 and `linux/arm64` binaries from [GitHub Releases](https://github.com/mehdizebhi/windroute/releases).
 
+To **uninstall** (removes the binary, windroute's nftables rules and its state):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mehdizebhi/windroute/main/install.sh | sh -s -- --uninstall
+```
+
 <details>
 <summary>Install options</summary>
 
 ```bash
 # specific version
-curl -fsSL .../install.sh | WINDROUTE_VERSION=v0.1.0 sh
+curl -fsSL .../install.sh | WINDROUTE_VERSION=v0.2.0 sh
 # install to ~/.local/bin (no sudo)
 curl -fsSL .../install.sh | WINDROUTE_PREFIX="$HOME/.local" sh
 ```
@@ -56,6 +62,7 @@ Skip `--connect` to connect from the Windscribe GUI instead (use a TCP protocol)
 | `doctor` | Check the system for everything windroute needs |
 | `test-proxy --proxy <url>` | Verify a proxy reaches a target (with a TLS probe) |
 | `logs` | Show the redirect proxy log (`-f` to follow) |
+| `uninstall` | Remove windroute's rules, state and the executable |
 
 Proxy URLs: `socks5://`, `socks5h://`, `http://`, `https://` (optional `user:pass@`).
 Key `start` flags: `--port` (default `10800`), `--connect`, `--location`,

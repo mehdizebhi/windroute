@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -73,6 +74,12 @@ func handleConn(client net.Conn, p *Proxy, listen string, logger *log.Logger) er
 	}
 	target, err := originalDst(tcp)
 	if err != nil {
+		// A plain (non-redirected) connection has no conntrack original
+		// destination. That is not an error, it just is not ours to proxy.
+		if errors.Is(err, syscall.ENOENT) {
+			logger.Printf("ignored %s: not a redirected connection", client.RemoteAddr())
+			return nil
+		}
 		return fmt.Errorf("cannot recover original destination: %w", err)
 	}
 
