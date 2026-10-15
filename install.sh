@@ -61,6 +61,22 @@ root_cmd_for() {
 	fi
 }
 
+# try_as_root runs a command directly and falls back to sudo only if needed.
+try_as_root() {
+	if [ "$(id -u)" -eq 0 ]; then
+		"$@"
+		return $?
+	fi
+	if "$@" 2>/dev/null; then
+		return 0
+	fi
+	if command -v sudo >/dev/null 2>&1; then
+		sudo "$@"
+		return $?
+	fi
+	return 1
+}
+
 # --- uninstall --------------------------------------------------------------
 do_uninstall() {
 	prefix="${WINDROUTE_PREFIX:-/usr/local}"
@@ -68,23 +84,20 @@ do_uninstall() {
 	target="$bindir/$BIN"
 	statedir="${WINDROUTE_STATE_DIR:-/run/windroute}"
 
-	as_root=""
-	if [ "$(id -u)" -ne 0 ]; then
-		command -v sudo >/dev/null 2>&1 && as_root="sudo"
-	fi
-
 	# Undo networking changes and stop the proxy using the installed binary.
 	if [ -x "$target" ]; then
-		$as_root "$target" stop >/dev/null 2>&1 || true
+		try_as_root "$target" stop >/dev/null 2>&1 || true
 	elif command -v "$BIN" >/dev/null 2>&1; then
-		$as_root "$BIN" stop >/dev/null 2>&1 || true
+		try_as_root "$BIN" stop >/dev/null 2>&1 || true
 	fi
 
-	$as_root rm -rf "$statedir"
-	say "removed state directory $statedir"
+	if [ -e "$statedir" ]; then
+		try_as_root rm -rf "$statedir" || die "could not remove $statedir"
+		say "removed state directory $statedir"
+	fi
 
 	if [ -e "$target" ]; then
-		$as_root rm -f "$target"
+		try_as_root rm -f "$target" || die "could not remove $target"
 		say "removed $target"
 	else
 		say "no binary found at $target"
